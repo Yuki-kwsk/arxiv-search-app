@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>論文検索アプリ</title>
+    <!-- index.html -->
+    <style>
+        body { font-family: sans-serif; margin: 2em; background-color: #f4f4f9; color: #333; }
+        h1 { color: #444; }
+        .controls { display: flex; align-items: center; gap: 10px; margin-bottom: 1em; }
+        #query { flex-grow: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        #max_results { padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        button { padding: 8px 15px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        select { padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        button:hover { background-color: #0056b3; }
+        .date-range { display: flex; align-items: center; gap: 5px; }
+        .search-tips { font-size: 0.9em; color: #555; background-color: #e9e9f4; padding: 10px; border-radius: 5px; margin-bottom: 1em; }
+        .search-tips summary { cursor: pointer; font-weight: bold; }
+        .search-tips ul { padding-left: 20px; margin: 10px 0 0 0; }
+        .search-tips code { background-color: #dcdcdc; padding: 2px 4px; border-radius: 3px; }
+        #results { margin-top: 1em; }
+        .suggestions-container { margin-bottom: 1em; }
+        .suggestion-tag {
+            display: inline-block;
+            background-color: #e0e0e0;
+            padding: 4px 8px; margin: 2px; border-radius: 4px; font-size: 0.9em; cursor: pointer;
+        }
+        .suggestion-tag:hover { background-color: #c7c7c7; }
+        .paper { background-color: white; border: 1px solid #ddd; padding: 1em; margin-bottom: 1em; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .paper-header { display: flex; justify-content: space-between; align-items: flex-start; }
+        .paper-header h3 { margin-top: 0; flex-grow: 1; }
+        h3 { margin-top: 0; }
+        .paper-actions { margin-top: 10px; }
+        .paper-actions {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .summary-jp { background-color: #f0f8ff; border: 1px solid #add8e6; padding: 10px; margin-top: 10px; border-radius: 4px; }
+        .bibtex-output-container { margin-top: 1em; }
+        #bibtex-output { width: 100%; height: 200px; font-family: monospace; }
+        .bibtex-header { display: flex; justify-content: space-between; align-items: center; }
+        #comparison-container { margin-top: 1em; }
+        .bibtex-checkbox {
+            transform: scale(1.5);
+        }
+    </style>
+</head>
+<body>
+    <h1>Paper Search</h1>
+    <div class="controls">
+        <input type="text" id="query" placeholder="検索キーワード (例: quantum computing)">
+        <label for="max_results">表示件数:</label>
+        <input type="number" id="max_results" value="5" min="1" max="50">
+        <div class="date-range">
+            <label for="start-date">期間:</label>
+            <input type="date" id="start-date">
+            <span>〜</span>
+            <input type="date" id="end-date">
+        </div>
+        <label for="sort-by">並び順:</label>
+        <select id="sort-by">
+            <option value="relevance" selected>関連性が高い順</option>
+            <option value="newest">投稿日が新しい順</option>
+            <option value="oldest">投稿日が古い順</option>
+        </select>
+        <button onclick="search()">検索</button>
+    </div>
+    <div id="suggestions-container" class="suggestions-container"></div>
+    <div class="bibtex-controls">
+        <button onclick="getBibtex()">選択した論文のBibTeXを取得</button>
+        <!-- <button onclick="comparePapers()">選択した論文をAIで比較要約</button> -->
+    </div>
+
+
+    <div class="search-tips">
+        <details>
+            <summary>検索のヒント</summary>
+            <ul>
+                <li>キーワードは英語で入力してください。(例: "machine learning", "quantum computing")</li>
+                <li><strong>AND (かつ):</strong> <code>cat:cs.CV AND "object detection"</code> (カテゴリがcs.CVで、"object detection"を含む)</li>
+                <li><strong>OR (または):</strong> <code>"machine learning" OR "deep learning"</code> ("machine learning" または "deep learning" を含む)</li>
+                <li><strong>NOT (含まない):</strong> <code>cat:cs.AI NOT "reinforcement learning"</code> (AI分野で "reinforcement learning" を含まない)</li>
+                <li><strong>著者名で検索:</strong> <code>au:"Yoshua Bengio"</code></li>
+            </ul>
+        </details>
+    </div>
+
+    <div id="results"></div>
+
+    <div id="bibtex-container" class="bibtex-output-container" style="display: none;">
+        <h3>BibTeX 出力</h3>
+        <div class="bibtex-header">
+            <h3>BibTeX 出力</h3>
+            <button onclick="copyBibtex()">クリップボードにコピー</button>
+        </div>
+        <textarea id="bibtex-output" readonly></textarea>
+    </div>
+
+    <script>
+        // 検索結果を保持するためのグローバル変数
+        let currentPapers = [];
+
+        async function search() {
+            const query = document.getElementById('query').value;
+            const maxResults = document.getElementById('max_results').value;
+            const startDate = document.getElementById('start-date').value;
+            const endDate = document.getElementById('end-date').value;
+            const sortBy = document.getElementById('sort-by').value;
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '検索中...';
+
+            try {
+                // URLにパラメータを追加していく
+                let searchUrl = `/search?query=${encodeURIComponent(query)}&max_results=${maxResults}&sort_by=${sortBy}`;
+                if (startDate) {
+                    searchUrl += `&start_date=${startDate}`;
+                }
+                if (endDate) {
+                    searchUrl += `&end_date=${endDate}`;
+                }
+                // バックエンドのAPIを呼び出す
+                const response = await fetch(searchUrl);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                // 検索結果をグローバル変数に保存
+                const data = await response.json();
+                currentPapers = data.papers;
+
+                resultsDiv.innerHTML = ''; // 結果をクリア
+                renderSuggestions(data.suggestions);
+
+                if (currentPapers.length === 0) {
+                    resultsDiv.innerHTML = '該当する論文は見つかりませんでした。';
+                    return;
+                }
+
+                currentPapers.forEach((paper, index) => {
+                    const paperDiv = document.createElement('div');
+                    paperDiv.className = 'paper';
+                    paperDiv.id = `paper-${index}`; // 各論文に一意のIDを付与
+                    paperDiv.innerHTML = `
+                        <div class="paper-header">
+                            <h3>${paper.title}</h3>
+                        </div>
+                        <p><strong>Authors:</strong> ${paper.authors.join(', ')}</p>
+                        <p><strong>Published:</strong> ${paper.published}</p>
+                        <p>${paper.summary}</p>
+                        <div class="paper-actions">
+                            <a href="${paper.pdf_url}" target="_blank">PDFを開く</a>
+                            <button onclick="translateSummary(${index})">翻訳</button>
+                            <input type="checkbox" class="bibtex-checkbox" value="${index}" title="この論文を選択">
+                        </div>
+                    `;
+                    resultsDiv.appendChild(paperDiv);
+                });
+
+            } catch (error) {
+                resultsDiv.innerHTML = `エラーが発生しました: ${error.message}`;
+                console.error('Fetch error:', error);
+            }
+        }
+
+        async function translateSummary(index) {
+            const paper = currentPapers[index];
+            const paperDiv = document.getElementById(`paper-${index}`);
+            const actionDiv = paperDiv.querySelector('.paper-actions');
+
+            // 既に翻訳が表示されている場合は何もしない
+            if (paperDiv.querySelector('.summary-jp')) {
+                return;
+            }
+
+            // "翻訳"ボタンを取得
+            const translateButton = actionDiv.querySelector('button');
+            translateButton.textContent = '翻訳中...';
+            translateButton.disabled = true;
+
+            try {
+                const response = await fetch('/translate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: paper.summary })
+                });
+                const data = await response.json();
+
+                const resultDiv = document.createElement('div');
+                resultDiv.className = 'summary-jp';
+
+                if (response.ok && data.translation) {
+                    resultDiv.textContent = data.translation;
+                    translateButton.style.display = 'none';
+                } else {
+                    resultDiv.style.color = 'red';
+                    resultDiv.textContent = '翻訳に失敗しました: ' + (data.error || 'サーバーからの応答がありません');
+                    translateButton.textContent = '再翻訳';
+                    translateButton.disabled = false;
+                }
+                paperDiv.appendChild(resultDiv);
+
+            } catch (error) {
+                console.error('Translation error:', error);
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'summary-jp';
+                errorDiv.style.color = 'red';
+                errorDiv.textContent = '翻訳リクエスト中にエラーが発生しました。';
+                paperDiv.appendChild(errorDiv);
+                translateButton.textContent = '再翻訳';
+                translateButton.disabled = false;
+            }
+        }
+
+        function getBibtex() {
+            const checkboxes = document.querySelectorAll('.bibtex-checkbox:checked');
+            const bibtexContainer = document.getElementById('bibtex-container');
+            const bibtexOutput = document.getElementById('bibtex-output');
+
+            if (checkboxes.length === 0) {
+                alert('BibTeXを取得する論文を少なくとも1つ選択してください。');
+                return;
+            }
+
+            let bibtexEntries = [];
+            checkboxes.forEach(checkbox => {
+                const paperIndex = checkbox.value;
+                bibtexEntries.push(currentPapers[paperIndex].bibtex);
+            });
+
+            bibtexOutput.value = bibtexEntries.join('\n\n');
+            bibtexContainer.style.display = 'block';
+            
+            // テキストエリアにスクロールして、内容を全選択
+            bibtexOutput.focus();
+            bibtexOutput.select();
+        }
+
+        function copyBibtex() {
+            const bibtexOutput = document.getElementById('bibtex-output');
+            const textToCopy = bibtexOutput.value;
+
+            if (!textToCopy) {
+                return; // コピーする内容がない場合は何もしない
+            }
+
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                // 成功時のフィードバック
+                const copyButton = document.querySelector('#bibtex-container button');
+                const originalText = copyButton.textContent;
+                copyButton.textContent = 'コピーしました！';
+                setTimeout(() => {
+                    copyButton.textContent = originalText;
+                }, 2000); // 2秒後にボタンのテキストを元に戻す
+            }).catch(err => {
+                console.error('コピーに失敗しました: ', err);
+                alert('クリップボードへのコピーに失敗しました。');
+            });
+        }
+
+        function renderSuggestions(suggestions) {
+            const container = document.getElementById('suggestions-container');
+            container.innerHTML = '';
+            if (!suggestions || suggestions.length === 0) {
+                return;
+            }
+
+            const label = document.createElement('strong');
+            label.textContent = '関連ワード: ';
+            container.appendChild(label);
+
+            suggestions.forEach(word => {
+                const tag = document.createElement('span');
+                tag.className = 'suggestion-tag';
+                tag.textContent = word;
+                tag.onclick = () => {
+                    const queryInput = document.getElementById('query');
+                    queryInput.value = word;
+                    search();
+                };
+                container.appendChild(tag);
+            });
+        }
+
+        async function comparePapers() {
+            const checkboxes = document.querySelectorAll('.bibtex-checkbox:checked');
+            const comparisonContainer = document.getElementById('comparison-container');
+            const comparisonOutput = document.getElementById('comparison-output');
+            const compareButton = document.querySelector('.bibtex-controls button:last-child');
+
+            if (checkboxes.length < 2) {
+                alert('比較する論文を2つ以上選択してください。');
+                return;
+            }
+
+            const summaries = Array.from(checkboxes).map(checkbox => {
+                return currentPapers[checkbox.value].summary;
+            });
+
+            comparisonContainer.style.display = 'block';
+            comparisonOutput.textContent = 'AIが論文を読み込み、比較要約を生成しています...（これには数分かかる場合があります）';
+            const originalButtonText = compareButton.textContent;
+            compareButton.textContent = '生成中...';
+            compareButton.disabled = true;
+
+            // タイムアウト処理 (例: 3分)
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => {
+                controller.abort();
+                comparisonOutput.textContent = '処理がタイムアウトしました。選択する論文の数を減らすか、別の論文で試してください。';
+                compareButton.textContent = originalButtonText;
+                compareButton.disabled = false;
+            }, 180000); // 180000ミリ秒 = 3分
+
+            try {
+                const response = await fetch('/compare', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ summaries: summaries }),
+                    signal: controller.signal // タイムアウト用のシグナルを渡す
+                });
+
+                // タイムアウト前に処理が完了したらタイマーを解除
+                clearTimeout(timeoutId);
+
+                const data = await response.json();
+                if (response.ok) {
+                    comparisonOutput.textContent = data.comparison;
+                } else {
+                    // サーバーからのエラーメッセージをより詳細に表示
+                    comparisonOutput.textContent = `比較要約の生成に失敗しました: ${data.error || '不明なサーバーエラー'}`;
+                }
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    // タイムアウトによる中断の場合は何もしない（メッセージはタイマー側で設定済み）
+                } else {
+                    comparisonOutput.textContent = `通信エラーが発生しました: ${error.message}`;
+                }
+            } finally {
+                compareButton.textContent = originalButtonText;
+                compareButton.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
